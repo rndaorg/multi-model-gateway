@@ -2,68 +2,72 @@ import streamlit as st
 import requests
 import pandas as pd
 
-st.set_page_config(page_title="LLM Gateway Demo", layout="wide")
+st.set_page_config(layout="wide")
+st.title("🚀 Production Multi-Model Gateway")
 
-st.title("🌐 Multi-Model API Gateway Demo")
-st.markdown("Test routing strategies: **Cost** vs **Performance** vs **Fallback**")
+API_URL = "http://localhost:8000"
+API_KEY = "demo-key-123"
 
-# Sidebar for configuration
-st.sidebar.header("Configuration")
-strategy = st.sidebar.selectbox("Routing Strategy", ["performance", "cost", "balanced"])
-api_url = st.sidebar.text_input("Gateway URL", "http://localhost:8000")
+# Sidebar: Health Status
+st.sidebar.header("System Status")
+try:
+    health = requests.get(f"{API_URL}/health/models").json()
+    for model, status in health.items():
+        color = "🟢" if status == "healthy" else "🔴"
+        st.sidebar.write(f"{color} {model}: {status}")
+except:
+    st.sidebar.error("Gateway Offline")
 
-# Chat Interface
+# Chat
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-if prompt := st.chat_input("Ask anything..."):
+if prompt := st.chat_input("Stream enabled by default..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        message_placeholder = st.empty()
+        placeholder = st.empty()
+        full_response = ""
+        
         try:
+            # Streaming Request
             payload = {
                 "messages": [{"role": "user", "content": prompt}],
-                "strategy": strategy
+                "strategy": "cost",
+                "stream": True
             }
-            response = requests.post(f"{api_url}/v1/chat/completions", json=payload, timeout=30)
-            data = response.json()
+            headers = {"x-api-key": API_KEY}
             
-            content = data["choices"][0]["message"]["content"]
-            metadata = data["gateway_metadata"]
+            with requests.post(f"{API_URL}/v1/chat/completions", json=payload, headers=headers, stream=True) as r:
+                for line in r.iter_lines():
+                    if line:
+                        decoded = line.decode('utf-8')
+                        if decoded.startswith(" "):
+                            content = decoded[6:]
+                            if content == "[DONE]":
+                                break
+                            if content.startswith("[ERROR]"):
+                                st.error(content)
+                                break
+                            full_response += content
+                            placeholder.markdown(full_response + "▌")
             
-            message_placeholder.markdown(content)
-            
-            # Show Metadata Metrics
-            st.metrics(
-                label="Model Used", 
-                value=metadata["model_used"], 
-                delta=f"{metadata['latency_s']}s latency"
-            )
-            st.info(f"💰 Estimated Cost: ${data['usage']['estimated_cost_usd']}")
-            
-            st.session_state.messages.append({"role": "assistant", "content": content})
+            placeholder.markdown(full_response)
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
             
         except Exception as e:
-            st.error(f"Gateway Error: {e}")
+            st.error(f"Connection Error: {e}")
 
-# Usage Dashboard
+# DB Stats
 st.divider()
-st.subheader("📊 Real-Time Traffic & Cost Log")
-try:
-    stats = requests.get(f"{api_url}/usage/stats").json()
-    if stats['logs']:
-        df = pd.DataFrame(stats['logs'])
-        st.dataframe(df)
-        total_cost = sum(df['cost'])
-        st.metric("Total Session Cost", f"${total_cost:.6f}")
-    else:
-        st.write("No requests logged yet.")
-except:
-    st.write("Waiting for gateway stats...")
+st.subheader("💰 Cost & Usage Analytics (From PostgreSQL)")
+# Note: In a real app, you'd create an endpoint to fetch DB logs securely
+# For demo, we simulate fetching from the /usage/stats endpoint if you kept it, 
+# or query DB directly (not recommended for frontend).
+st.info("Analytics are being persisted to PostgreSQL. Check DB directly for billing reports.")
